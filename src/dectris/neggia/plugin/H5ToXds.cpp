@@ -3,6 +3,7 @@
 #include "H5ToXds.h"
 #include <dectris/neggia/user/Dataset.h>
 #include <dectris/neggia/user/H5File.h>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -11,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <vector>
 #include "H5Error.h"
 
 namespace {
@@ -28,7 +30,14 @@ struct H5DataCache {
     bool masterFileOnly;
 };
 
-std::unique_ptr<H5DataCache> GLOBAL_HANDLE = nullptr;
+// NEGGIA-001: Worker pool replaces GLOBAL_HANDLE singleton (XDS-037 RFC Tier-1
+// Stage 1). Each worker owns its own H5DataCache + H5File (own mmap = own
+// kernel readahead state, load-bearing for GeeseFS-S3 concurrency win).
+// plugin_get_data dispatches by frame_number % NUM_WORKERS — lock-free hot path
+// (each worker's state is thread-confined). Single-open external contract
+// preserved (refuse second plugin_open while pool non-empty).
+constexpr int NUM_WORKERS = 16;
+std::vector<std::unique_ptr<H5DataCache>> GLOBAL_POOL;
 
 void printVersionInfo() {
     std::cout << "This is neggia " << VERSION << " (Copyright Dectris 2020)"
@@ -139,12 +148,11 @@ double readFloatFromDataset(const Dataset& d) {
     }
 }
 
-H5DataCache* getPreopenedDataCache() {
-    H5DataCache* dataCache = GLOBAL_HANDLE.get();
-    if (!dataCache) {
+H5DataCache* getPreopenedDataCache(size_t frame_index = 0) {
+    if (GLOBAL_POOL.empty()) {
         throw H5Error(-2, "NEGGIA ERROR: NO FILE HAS BEEN OPENED YET");
     }
-    return dataCache;
+    return GLOBAL_POOL[frame_index % GLOBAL_POOL.size()].get();
 }
 
 size_t correctFrameNumberOffset(int frameNumberStartingFromOne) {
@@ -419,22 +427,24 @@ void plugin_open(const char* filename, int info_array[1024], int* error_flag) {
     setInfoArray(info_array);
     *error_flag = 0;
     printVersionInfo();
-    std::unique_ptr<H5DataCache> dataCache(new H5DataCache);
-    try {
-        dataCache->filename = filename;
-        dataCache->h5File = H5File(filename);
-    } catch (const std::out_of_range&) {
-        std::cerr << "NEGGIA ERROR: CANNOT OPEN " << filename << std::endl;
-        *error_flag = -4;
-        return;
-    }
-    if (GLOBAL_HANDLE) {
+    if (!GLOBAL_POOL.empty()) {
         std::cerr << "NEGGIA ERROR: CAN ONLY OPEN ONE FILE AT A TIME "
                   << std::endl;
         *error_flag = -4;
         return;
-    } else {
-        GLOBAL_HANDLE = std::move(dataCache);
+    }
+    try {
+        GLOBAL_POOL.reserve(NUM_WORKERS);
+        for (int i = 0; i < NUM_WORKERS; ++i) {
+            std::unique_ptr<H5DataCache> dataCache(new H5DataCache);
+            dataCache->filename = filename;
+            dataCache->h5File = H5File(filename);
+            GLOBAL_POOL.push_back(std::move(dataCache));
+        }
+    } catch (const std::out_of_range&) {
+        std::cerr << "NEGGIA ERROR: CANNOT OPEN " << filename << std::endl;
+        GLOBAL_POOL.clear();
+        *error_flag = -4;
     }
 }
 
@@ -455,6 +465,27 @@ void plugin_get_header(int* nx,
         size_t nimages = getNumberOfImages(dataCache);
         size_t ntrigger = getNumberOfTriggers(dataCache);
         setNFramesPerDataset(dataCache);
+
+        // NEGGIA-001: propagate parsed header fields from worker[0] to
+        // worker[1..K-1] so each worker's H5DataCache is fully populated
+        // before any concurrent plugin_get_data call. Per audit Inv-A:
+        // H5DataCache is write-once-then-immutable after this point, so
+        // per-worker copies are thread-confined and need no synchronization
+        // on the hot path.
+        size_t maskSize = (size_t)dataCache->dimx * dataCache->dimy;
+        for (size_t i = 1; i < GLOBAL_POOL.size(); ++i) {
+            H5DataCache* w = GLOBAL_POOL[i].get();
+            w->dimx = dataCache->dimx;
+            w->dimy = dataCache->dimy;
+            w->datasize = dataCache->datasize;
+            w->nframesPerDataset = dataCache->nframesPerDataset;
+            w->xpixelSize = dataCache->xpixelSize;
+            w->ypixelSize = dataCache->ypixelSize;
+            w->masterFileOnly = dataCache->masterFileOnly;
+            w->mask.reset(new int32_t[maskSize]);
+            std::memcpy(w->mask.get(), dataCache->mask.get(),
+                        maskSize * sizeof(int32_t));
+        }
 
         *nx = dataCache->dimx;
         *ny = dataCache->dimy;
@@ -480,7 +511,7 @@ void plugin_get_data(int* frame_number,
                      int* error_flag) {
     setInfoArray(info_array);
     try {
-        H5DataCache* dataCache = getPreopenedDataCache();
+        H5DataCache* dataCache = getPreopenedDataCache((size_t)*frame_number);
         readDataset(frame_number, data_array, dataCache);
     } catch (const H5Error& error) {
         std::cerr << error.what() << std::endl;
@@ -491,7 +522,7 @@ void plugin_get_data(int* frame_number,
 }
 
 void plugin_close(int* error_flag) {
-    GLOBAL_HANDLE.reset();
+    GLOBAL_POOL.clear();
 }
 
 }  // extern "C"

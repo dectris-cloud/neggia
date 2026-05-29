@@ -126,35 +126,78 @@ Quantitative targets:
 
 ## 8-Step Workflow Log
 1. **Ticket:** this file (created 2026-05-29).
-2. **Requirement Spec:** `docs/specs/NEGGIA-001.md` (TODO —
-   `neggia-requirement-spec`). Spec must declare: thread-safety
-   guarantee on `plugin_get_data` (sequentially consistent across
-   any thread interleaving); sync primitive (mutex / atomic / per-worker
-   ownership — audit decides); `Test_XdsPluginConcurrent` exact shape;
-   ABI parity invariant; bit-exact regression invariant.
-3. **Audit & Challenge:** `docs/audits/NEGGIA-001.md` (TODO —
-   `neggia-deep-audit` driving `neggia-archaeologist`). Audit must
-   resolve: (a) is `H5DataCache` thread-safe internally or must each
-   worker get its own?; (b) does removing `GLOBAL_HANDLE` change any
-   single-open invariant currently relied on by `plugin_open`?; (c)
-   what's the minimal pool data structure that fits in ≤ 50 cap units?
-4. **Minimal Patch Proposal:** TODO — `neggia-surgical-patch`. ABI
-   HALT must not trigger (signatures unchanged). 50-line cap must not
-   blow.
-5. **Apply & Verify:** TODO. PR-side CI on
-   `feature/NEGGIA-001-worker-pool`. PASS = all 6 verifications green
-   (build, ctest, ABI parity, TSan, Helgrind, bit-exact).
+2. **Requirement Spec:** DONE 2026-05-29 — `docs/specs/NEGGIA-001.md`.
+   8 invariants, 8 acceptance tests, 7 out-of-scope items, 5 open
+   questions OQ-1..OQ-5.
+3. **Audit & Challenge:** DONE 2026-05-29 — `docs/audits/NEGGIA-001.md`.
+   Verdict: READY_FOR_HUMAN_APPLY (cap-exempt under reporter override).
+   All 5 OQs resolved (OQ-1 H5DataCache thread-safe under Inv-A but
+   per-worker preferred; OQ-2 K=16 hardcoded; OQ-3 candidate (a)
+   per-worker vector; OQ-4 preserve external single-open contract;
+   OQ-5 no fd multiplication). Devil's Advocate: NEGGIA-002's mmap→pread
+   may interact with bit-exactness on GeeseFS — flagged for NEGGIA-002
+   spec.
+4. **Minimal Patch Proposal:** DONE 2026-05-29 — `neggia-surgical-patch`.
+   Source-line count: **67 / 50** (sum of additions + removals;
+   reporter-direct override authorized per § Notes above). 7 files
+   touched: 1 EDIT in `src/dectris/neggia/plugin/H5ToXds.cpp`, 1 NEW
+   `src/dectris/neggia/test/Test_XdsPluginConcurrent.cpp` (test-cap-exempt),
+   1 EDIT `src/dectris/neggia/test/CMakeLists.txt` (framework-exempt),
+   1 NEW `tools/regress_bitexact.sh` (framework-exempt), 1 EDIT
+   `CHANGELOG.md`, ticket+audit edits. Diff summary in audit doc.
+5. **Apply & Verify:** DONE 2026-05-29 (local Mac arm64). Build clean;
+   ctest 9/9 pass incl. new `Test_XdsPluginConcurrent`; AT-1 ABI parity
+   pass (nm parity vs `docs/abi-baseline.txt`); AT-4 TSan clean; AT-5
+   Helgrind DEFERRED to Linux CI (no valgrind on macOS arm64); AT-6
+   bit-exact regression PASS on 9 fixtures (datasets_eiger1+2); AT-8
+   benchmark DEFERRED to NEGGIA-005 scientists-in-cloud.
 6. **Commit/PR:** TODO. Branch `feature/NEGGIA-001-worker-pool`.
    Commit subject `perf(NEGGIA-001): worker pool replacing
    GLOBAL_HANDLE singleton`.
-7. **Changelog:** TODO — `[Unreleased] → Changed`. One entry
-   describing the singleton-to-pool transition + ABI preservation +
-   ctest additions.
-8. **Learning:** Encouraged — first real exercise of the neggia
-   framework; worth capturing any surprises in the C++ archaeology
-   patterns vs Fortran (XDS-fork) precedent.
+7. **Changelog:** DONE 2026-05-29 — `[Unreleased] → Changed` entry
+   recording the singleton-to-pool transition, ABI preservation, new
+   ctest, verification results, and the cap-exemption note.
+8. **Learning:** TODO — first real C++ exercise of the neggia framework.
+   Worth capturing: (a) the audit-vs-skill cap-projection methodology
+   mismatch (net vs sum) that triggered HALT-then-override; (b) the
+   Inv-A discovery (H5DataCache is write-once-then-immutable) that
+   made per-worker ownership cheap; (c) Helgrind unavailability on
+   macOS arm64 — implications for the verification matrix.
 
 ## Notes
+
+### Reporter-direct cap exemption (2026-05-29)
+
+`neggia-surgical-patch` reported `HALTED_FOR_RESCOPE` at ~67/50 cap
+units (sum of additions + removals; 27 removed + 40 added per audit
+§Minimal Patch Proposal — HALTED). Audit's OQ-3 cap projection
+(17-27 units) was net-delta, not sum; the skill rule is sum.
+
+**Reporter override**: I (Max Burian, max.burian@dectris.com)
+authorize a one-time cap exemption to land NEGGIA-001 as a single
+ticket / single PR at ~67 cap units (~1.3× the 50-unit cap).
+
+**Rationale**: Worker-pool introduction is structurally one logical
+change. The framework-discipline split into NEGGIA-001 (struct prep)
++ NEGGIA-006 (K-expansion) would introduce a no-op intermediate
+commit (K=1 pool that's just a vector-wrapped singleton with
+identical behaviour to pre-patch) — pure churn with zero
+observable delivery between commits. Cleanest delivery is a single
+ticket that lands the structural + behavioural change together.
+
+**Precedent**: XDS-036 (dual-license model rollout, 2026-05-05)
+took a 155-cap-unit exemption (~3.1× cap) with similar
+single-ticket rationale. NEGGIA-001's exemption is more modest
+(~1.3×) and similarly contained.
+
+**Sibling housekeeping** (to be filed post-NEGGIA-001 close):
+update `neggia-deep-audit` skill body's OQ cap-projection
+methodology to use **sum** (not net delta), aligning with
+`neggia-surgical-patch`'s rule. Cap reaffirmed in force for all
+subsequent NEGGIA-NNN tickets.
+
+### Original notes
+
 - Audit Devil's Advocate prompt suggestions: "If H5DataCache holds
   any thread-affine state (e.g. errno-style last-error fields), the
   pool-of-shared approach breaks silently. What does the audit see
