@@ -5,7 +5,10 @@ on: [push, pull_request]
 # NEGGIA-001: modernised runner labels (replaced retired
 # ubuntu-18.04/20.04 + macos-10.15 + ubuntu-16.04) and added the
 # cmake 4.x policy workaround for googletest's
-# cmake_minimum_required(VERSION <3.5). Lesson inherited from
+# cmake_minimum_required(VERSION <3.5). Linux gcc-11+ also needed
+# -Wno-error=maybe-uninitialized because vendored googletest's
+# gtest-death-test.cc:1224 trips a stricter modern warning that gtest's
+# own -Werror config treats as a build break. Lessons inherited from
 # dectris-cloud/xds XDS-039 work.
 
 jobs:
@@ -21,6 +24,11 @@ jobs:
           - build-type: Release
             debug-parsing: OFF
     runs-on: ${{ matrix.os }}
+    env:
+      # Vendored googletest trips -Werror=maybe-uninitialized on modern
+      # gcc-11+ (Linux). macOS Apple clang doesn't enable this by default.
+      # Override here rather than mutate the vendored submodule.
+      CXXFLAGS: -Wno-error=maybe-uninitialized
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -60,6 +68,8 @@ jobs:
             gcc-version: 13
             os: ubuntu-24.04
     runs-on: ${{ matrix.os }}
+    env:
+      CXXFLAGS: -Wno-error=maybe-uninitialized
     steps:
       - name: Install Packages
         run: sudo apt-get update && sudo apt-get install -y gcc-${{ matrix.gcc-version }} g++-${{ matrix.gcc-version }}
