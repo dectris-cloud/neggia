@@ -4,6 +4,7 @@
 #define DATASETS_FIXTURE_H
 
 #include <gtest/gtest.h>
+#include <cstdint>
 #include <sstream>
 #include <string>
 

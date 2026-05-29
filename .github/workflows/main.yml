@@ -2,12 +2,19 @@ name: Build and Test
 
 on: [push, pull_request]
 
+# NEGGIA-001: modernised runner labels (replaced retired
+# ubuntu-18.04/20.04 + macos-10.15 + ubuntu-16.04) and added the
+# cmake 4.x policy workaround for googletest's
+# cmake_minimum_required(VERSION <3.5). Lesson inherited from
+# dectris-cloud/xds XDS-039 work.
+
 jobs:
   posix-cc:
     strategy:
+      fail-fast: false
       matrix:
         build-type: [Debug, Release]
-        os: [macos-10.15, macos-latest, ubuntu-18.04, ubuntu-20.04]
+        os: [macos-14, macos-15-intel, ubuntu-22.04, ubuntu-24.04]
         include:
           - build-type: Debug
             debug-parsing: ON
@@ -16,13 +23,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           submodules: true
       - name: Create Build Directory
         run: cmake -E make_directory ${{github.workspace}}.build
       - name: Configure CMake
-        run: cmake ${{github.workspace}} -DCMAKE_BUILD_TYPE=${{matrix.build-type}} -DDEBUG_PARSING=${{matrix.debug-parsing}}
+        # -DCMAKE_POLICY_VERSION_MINIMUM=3.5: cmake 4.x dropped support for
+        # the cmake_minimum_required(VERSION 2.6.4) declaration in the
+        # vendored googletest submodule; the flag relaxes policy enforcement.
+        # Safe no-op on cmake 3.x (Ubuntu apt).
+        run: cmake ${{github.workspace}} -DCMAKE_BUILD_TYPE=${{matrix.build-type}} -DDEBUG_PARSING=${{matrix.debug-parsing}} -DCMAKE_POLICY_VERSION_MINIMUM=3.5
         working-directory: ${{github.workspace}}.build
       - name: Build
         run: cmake --build .
@@ -33,32 +44,33 @@ jobs:
 
   posix-gcc:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - build-type: Debug
-            gcc-version: 4.8
-            os: ubuntu-16.04
+            gcc-version: 11
+            os: ubuntu-22.04
           - build-type: Debug
-            gcc-version: 10
-            os: ubuntu-20.04
+            gcc-version: 13
+            os: ubuntu-24.04
           - build-type: Release
-            gcc-version: 4.8
-            os: ubuntu-16.04
+            gcc-version: 11
+            os: ubuntu-22.04
           - build-type: Release
-            gcc-version: 10
-            os: ubuntu-20.04
+            gcc-version: 13
+            os: ubuntu-24.04
     runs-on: ${{ matrix.os }}
     steps:
       - name: Install Packages
-        run: sudo apt-get install -y gcc-${{ matrix.gcc-version }} g++-${{ matrix.gcc-version }}
+        run: sudo apt-get update && sudo apt-get install -y gcc-${{ matrix.gcc-version }} g++-${{ matrix.gcc-version }}
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           submodules: true
       - name: Create Build Directory
         run: cmake -E make_directory ${{github.workspace}}.build
       - name: Configure CMake
-        run: cmake ${{github.workspace}} -DCMAKE_BUILD_TYPE=${{matrix.build-type}} -DDEBUG_PARSING=ON
+        run: cmake ${{github.workspace}} -DCMAKE_BUILD_TYPE=${{matrix.build-type}} -DDEBUG_PARSING=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5
         env:
           CC: gcc-${{ matrix.gcc-version }}
           CXX: g++-${{ matrix.gcc-version }}
