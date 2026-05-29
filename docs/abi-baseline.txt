@@ -1,0 +1,16 @@
+# neggia C ABI symbol baseline
+#
+# The four plugin_* symbols are the contract with XDS-fork's Fortran
+# caller at src/generic_data_plugin.f90:140-170. Their signatures MUST
+# NOT change without a coordinated xds-side update — enforced by
+# neggia-surgical-patch's ABI HALT and by neggia-verify's nm -D parity
+# check.
+#
+# Format: one symbol per line, sorted alphabetically.
+# Source: derived from src/dectris/neggia/plugin/H5ToXds.cpp at commit
+# a81bdf8a994f18c61a313f57810651a76a218f17 (2021-03-26 baseline).
+
+plugin_close
+plugin_get_data
+plugin_get_header
+plugin_open
