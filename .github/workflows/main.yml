@@ -10,6 +10,10 @@ on: [push, pull_request]
 # gtest-death-test.cc:1224 trips a stricter modern warning that gtest's
 # own -Werror config treats as a build break. Lessons inherited from
 # dectris-cloud/xds XDS-039 work.
+#
+# Plugin .so is uploaded per lane as a GitHub Actions artifact so
+# downstream consumers (XDS-fork CI; scientists-in-cloud validation
+# nodes) can download a built plugin without rebuilding.
 
 jobs:
   posix-cc:
@@ -49,6 +53,14 @@ jobs:
       - name: Test
         run: ctest --output-on-failure
         working-directory: ${{github.workspace}}.build
+      - name: Upload dectris-neggia.so + sha256
+        uses: actions/upload-artifact@v4
+        with:
+          name: dectris-neggia-${{ matrix.os }}-${{ matrix.build-type }}-cc
+          path: |
+            ${{github.workspace}}.build/src/dectris/neggia/plugin/dectris-neggia.so
+          if-no-files-found: error
+          retention-days: 90
 
   posix-gcc:
     strategy:
@@ -91,3 +103,11 @@ jobs:
       - name: Test
         run: ctest --output-on-failure
         working-directory: ${{github.workspace}}.build
+      - name: Upload dectris-neggia.so + sha256
+        uses: actions/upload-artifact@v4
+        with:
+          name: dectris-neggia-${{ matrix.os }}-${{ matrix.build-type }}-gcc${{ matrix.gcc-version }}
+          path: |
+            ${{github.workspace}}.build/src/dectris/neggia/plugin/dectris-neggia.so
+          if-no-files-found: error
+          retention-days: 90
