@@ -77,3 +77,17 @@ target_link_libraries(Test_XdsPluginWithData
   gtest_main
   )
 add_test(Test_XdsPluginWithData Test_XdsPluginWithData)
+
+# NEGGIA-001 concurrent stress test: 16 threads x 100 calls; AT-3 / AT-4 (TSan) / AT-5 (Helgrind).
+add_executable(Test_XdsPluginConcurrent
+  $<TARGET_OBJECTS:NEGGIA_COMPRESSION_ALGORITHMS>
+  DatasetsFixture.cpp
+  Test_XdsPluginConcurrent.cpp
+  )
+target_link_libraries(Test_XdsPluginConcurrent
+  dl
+  pthread
+  gtest
+  gtest_main
+  )
+add_test(Test_XdsPluginConcurrent Test_XdsPluginConcurrent)
