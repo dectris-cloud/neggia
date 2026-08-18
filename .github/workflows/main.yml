@@ -111,3 +111,56 @@ jobs:
             ${{github.workspace}}.build/src/dectris/neggia/plugin/dectris-neggia.so
           if-no-files-found: error
           retention-days: 90
+
+  # NEGGIA-003: concurrency gates. Flags go via env, NOT -DCMAKE_*_FLAGS —
+  # a -D would silently drop the gtest -Wno-error accommodation (audit inv 2).
+  tsan:
+    runs-on: ubuntu-24.04
+    env:
+      CXXFLAGS: -fsanitize=thread -g -Wno-error=maybe-uninitialized
+      CFLAGS: -fsanitize=thread -g
+      TSAN_OPTIONS: halt_on_error=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Create Build Directory
+        run: cmake -E make_directory ${{github.workspace}}.build
+      - name: Configure CMake (Release — reproduces NEGGIA-001's TSan evidence)
+        run: cmake ${{github.workspace}} -DCMAKE_BUILD_TYPE=Release -DDEBUG_PARSING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        working-directory: ${{github.workspace}}.build
+      - name: Prove TSan instrumentation (fail if flags were lost)
+        run: grep -- '-fsanitize=thread' CMakeCache.txt
+        working-directory: ${{github.workspace}}.build
+      - name: Build
+        run: cmake --build .
+        working-directory: ${{github.workspace}}.build
+      - name: Test
+        run: ctest --output-on-failure
+        working-directory: ${{github.workspace}}.build
+
+  helgrind:
+    runs-on: ubuntu-24.04
+    env:
+      CXXFLAGS: -Wno-error=maybe-uninitialized
+    steps:
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Create Build Directory
+        run: cmake -E make_directory ${{github.workspace}}.build
+      - name: Configure CMake (Debug for symbolized Helgrind reports)
+        run: cmake ${{github.workspace}} -DCMAKE_BUILD_TYPE=Debug -DDEBUG_PARSING=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        working-directory: ${{github.workspace}}.build
+      - name: Build
+        run: cmake --build .
+        working-directory: ${{github.workspace}}.build
+      - name: Helgrind on concurrency tests (cwd = test dir for fixture symlink)
+        run: |
+          valgrind --tool=helgrind --error-exitcode=1 ./Test_XdsPluginConcurrent
+          valgrind --tool=helgrind --error-exitcode=1 ./Test_XdsPlugin
+        working-directory: ${{github.workspace}}.build/src/dectris/neggia/test
