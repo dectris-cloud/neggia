@@ -6,6 +6,19 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Tier-1 plan amended + NEGGIA-001 closed** (2026-08-18): stage order
+  re-planned to benchmark-harness → CI concurrency lanes + fixture
+  upgrade → per-worker dataset cache → ring prefetch → tunables → cloud
+  campaign, with pread demoted to an evidence-gated conditional
+  (`docs/plans/tier-1-performance.md` §Amendment record documents the
+  three driving findings: serial XDS caller, per-frame data-file
+  re-parse cost at `user/Dataset.cpp:36,45`, and the absence of any
+  benchmark harness). NEGGIA-001 moved to `tickets/closed/` with AC-3
+  partial (fixture → NEGGIA-004) and AC-5 deferred (Helgrind →
+  NEGGIA-003 lane) recorded; learning doc at
+  `docs/learnings/NEGGIA-001.md`; the 16×-master-mmap Inv-B divergence
+  and the three unfiled audit anomalies assigned to NEGGIA-005.
+  Wave-1 tickets NEGGIA-002/003/004 opened. — closes NEGGIA-001
 - **Worker pool replaces `GLOBAL_HANDLE` singleton** (NEGGIA-001 —
   Stage 1 of Tier-1 perf overhaul per XDS-037 RFC). The plugin layer
   now holds `NUM_WORKERS=16` `H5DataCache` instances, each with its
