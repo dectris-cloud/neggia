@@ -1,7 +1,7 @@
 # Ticket: NEGGIA-001 — Worker pool replacing GLOBAL_HANDLE singleton
 
 ## Status
-Open
+Closed (2026-08-18 closeout, contingent on PR #28 merge — the closeout PR stacks on #28 and merges after it; CHANGELOG entry exists per lifecycle rule)
 
 ## Type
 perf
@@ -70,33 +70,33 @@ Quantitative targets:
   pessimization not introduced).
 
 ## Acceptance Criteria
-- [ ] **AC-1 — ABI parity.** `nm -D
+- [x] **AC-1 — ABI parity.** (PASS 2026-05-29, step-5 verify) `nm -D
       build/src/dectris/neggia/plugin/dectris-neggia.so | grep -E
       '\b(plugin_open|plugin_close|plugin_get_header|plugin_get_data)\b' |
       sort` matches `docs/abi-baseline.txt` exactly.
-- [ ] **AC-2 — Existing ctest still green.** All 8 upstream tests
+- [x] **AC-2 — Existing ctest still green.** (PASS 2026-05-29 local, 9/9; re-confirmed by 12 green CI lanes on PR #28) All 8 upstream tests
       (`Test_Dataset`, `Test_EigerData`, `Test_DifferentH5Ver`,
       `Test_H5DataspaceMsg`, `Test_H5FilterMsg`, `Test_H5ObjectHeader`,
       `Test_XdsPlugin`, `Test_XdsPluginWithData`) pass post-patch.
       Verified via `cd build && ctest --output-on-failure` exit 0.
-- [ ] **AC-3 — New concurrent stress test.** `Test_XdsPluginConcurrent`
+- [ ] **AC-3 — New concurrent stress test.** *(PARTIAL — deferral recorded in Notes §Closeout: test exists, is wired, and runs 16×100 with bit-equality asserts, but against the 5-frame synthetic `dataset_artificial_small_001` fixture rather than `datasets_eiger1/`, so only workers 1–5 of 16 are exercised and no real compression path runs concurrently. Fixture upgrade = NEGGIA-004.)* `Test_XdsPluginConcurrent`
       exists at `src/dectris/neggia/test/Test_XdsPluginConcurrent.cpp`,
       is wired into `src/dectris/neggia/test/CMakeLists.txt`, runs 16
       threads × 100 `plugin_get_data` calls each against
       `h5-testfiles/datasets_eiger1/`, asserts bit-equality of each
       returned frame against the single-threaded reference.
-- [ ] **AC-4 — TSan clean.** `cmake -B build-tsan
+- [x] **AC-4 — TSan clean.** (PASS 2026-05-29 local `build-tsan/`; scope caveat: on the synthetic fixture — see AC-3) `cmake -B build-tsan
       -DCMAKE_CXX_FLAGS="-fsanitize=thread -g"` followed by
       `cd build-tsan && ctest --output-on-failure` shows zero
       `WARNING: ThreadSanitizer` lines in any test log; exit 0.
-- [ ] **AC-5 — Helgrind clean.** `valgrind --tool=helgrind
+- [ ] **AC-5 — Helgrind clean.** *(DEFERRED — deferral recorded in Notes §Closeout: no valgrind on macOS arm64 and no CI valgrind lane exists; evidence arrives via the NEGGIA-003 Helgrind lane running on merged master. Human sign-off: reporter, 2026-08-18.)* `valgrind --tool=helgrind
       --error-exitcode=1 ./build/.../Test_XdsPluginConcurrent` exits 0.
-- [ ] **AC-6 — Bit-exact regression.** For every fixture under
+- [x] **AC-6 — Bit-exact regression.** (PASS 2026-05-29, 9 fixtures via `tools/regress_bitexact.sh`) For every fixture under
       `src/dectris/neggia/test/h5-testfiles/datasets_eiger{1,2}/`, the
       post-patch `.so` returns byte-identical frames to the pre-patch
       `.so` for `plugin_get_data(N)` across N in [0, total_frames-1].
       Verified via `tools/regress_bitexact.sh` (new helper).
-- [ ] **AC-7 — Source-line cap.** ≤ 50 cap units per
+- [x] **AC-7 — Source-line cap.** (RESOLVED via reporter-authorized one-time exemption at 67/50 — see Notes §Reporter-direct cap exemption; cap reaffirmed for all subsequent tickets) ≤ 50 cap units per
       `neggia-surgical-patch` counting rules (incl. 1.5× header
       weight). HALT if exceeded.
 
@@ -151,20 +151,45 @@ Quantitative targets:
    Helgrind DEFERRED to Linux CI (no valgrind on macOS arm64); AT-6
    bit-exact regression PASS on 9 fixtures (datasets_eiger1+2); AT-8
    benchmark DEFERRED to NEGGIA-005 scientists-in-cloud.
-6. **Commit/PR:** TODO. Branch `feature/NEGGIA-001-worker-pool`.
-   Commit subject `perf(NEGGIA-001): worker pool replacing
-   GLOBAL_HANDLE singleton`.
+6. **Commit/PR:** DONE — branch `feature/NEGGIA-001-worker-pool`,
+   core commit `561f909` (`perf(NEGGIA-001): worker pool replacing
+   GLOBAL_HANDLE singleton`) + CI-hardening follow-ups (`01ab67d`,
+   `2293e9e`, `80c41c9`, `9dc2a9d`; `63b340d`/`6891e36` are a no-op
+   revert pair). **PR #28**, 12 CI lanes green (latest run 2026-05-30).
+   Human merge gate: reporter merges #28 as-is; this closeout rides a
+   stacked chore PR that merges after it.
 7. **Changelog:** DONE 2026-05-29 — `[Unreleased] → Changed` entry
    recording the singleton-to-pool transition, ABI preservation, new
    ctest, verification results, and the cap-exemption note.
-8. **Learning:** TODO — first real C++ exercise of the neggia framework.
-   Worth capturing: (a) the audit-vs-skill cap-projection methodology
-   mismatch (net vs sum) that triggered HALT-then-override; (b) the
-   Inv-A discovery (H5DataCache is write-once-then-immutable) that
-   made per-worker ownership cheap; (c) Helgrind unavailability on
-   macOS arm64 — implications for the verification matrix.
+8. **Learning:** DONE 2026-08-18 — `docs/learnings/NEGGIA-001.md`
+   (net-vs-sum cap methodology, since codified in `neggia-deep-audit`;
+   Inv-B implementation divergence; the serial-caller premise error
+   that drove the 2026-08-18 tier-1 plan amendment; Helgrind/macOS-arm64
+   gap → NEGGIA-003).
 
 ## Notes
+
+### Closeout (2026-08-18)
+
+- **AC-3 partial / AC-5 deferred** (deferral authorized by reporter per
+  `tickets/README.md` closure rule): fixture upgrade → **NEGGIA-004**;
+  Helgrind evidence → **NEGGIA-003** CI lane on merged master.
+- **Premise correction:** the Priority-field claim that the pool
+  "surfaces the parallelism XDS already has above the plugin" is
+  withdrawn — XDS calls `plugin_get_data` serially
+  (`generic_getfrm.f90:99`); the pool is scaffolding whose payoff
+  arrives with NEGGIA-007's prefetch threads. See the amended
+  `docs/plans/tier-1-performance.md` §Amendment record.
+- **Implementation divergence from audit Inv-B**, discovered post-land:
+  `plugin_open` constructs 16 independent master `H5File` mmaps
+  (`H5ToXds.cpp:437-443`) instead of one shared handle — assigned to
+  **NEGGIA-005** together with the audit's three unfiled anomalies
+  (dead file-scope `retVal` at `:422`; `plugin_close` never sets
+  `*error_flag`; per-frame Dataset re-parse cost).
+- **Sibling housekeeping done:** `neggia-deep-audit` cap-projection
+  sum-counting codified 2026-08-18 (xds repo, XDS-072 wave-1 PR).
+- Frozen A/B baseline for NEGGIA-002+ benchmarking: the `.so` built
+  from PR #28's merge commit.
 
 ### Reporter-direct cap exemption (2026-05-29)
 
