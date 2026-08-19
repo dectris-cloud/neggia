@@ -2,27 +2,44 @@ name: Build and Test
 
 on: [push, pull_request]
 
+# The cmake 4.x policy workaround covers googletest's
+# cmake_minimum_required(VERSION <3.5); -Wno-error=maybe-uninitialized
+# silences a modern-gcc warning that vendored googletest's -Werror
+# config treats as a build break.
+#
+# The plugin .so is uploaded per lane as a GitHub Actions artifact.
+
 jobs:
   posix-cc:
     strategy:
+      fail-fast: false
       matrix:
         build-type: [Debug, Release]
-        os: [macos-10.15, macos-latest, ubuntu-18.04, ubuntu-20.04]
+        os: [macos-14, macos-15-intel, ubuntu-22.04, ubuntu-24.04]
         include:
           - build-type: Debug
             debug-parsing: ON
           - build-type: Release
             debug-parsing: OFF
     runs-on: ${{ matrix.os }}
+    env:
+      # Vendored googletest trips -Werror=maybe-uninitialized on modern
+      # gcc-11+ (Linux). macOS Apple clang doesn't enable this by default.
+      # Override here rather than mutate the vendored submodule.
+      CXXFLAGS: -Wno-error=maybe-uninitialized
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           submodules: true
       - name: Create Build Directory
         run: cmake -E make_directory ${{github.workspace}}.build
       - name: Configure CMake
-        run: cmake ${{github.workspace}} -DCMAKE_BUILD_TYPE=${{matrix.build-type}} -DDEBUG_PARSING=${{matrix.debug-parsing}}
+        # -DCMAKE_POLICY_VERSION_MINIMUM=3.5: cmake 4.x dropped support for
+        # the cmake_minimum_required(VERSION 2.6.4) declaration in the
+        # vendored googletest submodule; the flag relaxes policy enforcement.
+        # Safe no-op on cmake 3.x (Ubuntu apt).
+        run: cmake ${{github.workspace}} -DCMAKE_BUILD_TYPE=${{matrix.build-type}} -DDEBUG_PARSING=${{matrix.debug-parsing}} -DCMAKE_POLICY_VERSION_MINIMUM=3.5
         working-directory: ${{github.workspace}}.build
       - name: Build
         run: cmake --build .
@@ -30,35 +47,46 @@ jobs:
       - name: Test
         run: ctest --output-on-failure
         working-directory: ${{github.workspace}}.build
+      - name: Upload dectris-neggia.so + sha256
+        uses: actions/upload-artifact@v4
+        with:
+          name: dectris-neggia-${{ matrix.os }}-${{ matrix.build-type }}-cc
+          path: |
+            ${{github.workspace}}.build/src/dectris/neggia/plugin/dectris-neggia.so
+          if-no-files-found: error
+          retention-days: 90
 
   posix-gcc:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - build-type: Debug
-            gcc-version: 4.8
-            os: ubuntu-16.04
+            gcc-version: 11
+            os: ubuntu-22.04
           - build-type: Debug
-            gcc-version: 10
-            os: ubuntu-20.04
+            gcc-version: 13
+            os: ubuntu-24.04
           - build-type: Release
-            gcc-version: 4.8
-            os: ubuntu-16.04
+            gcc-version: 11
+            os: ubuntu-22.04
           - build-type: Release
-            gcc-version: 10
-            os: ubuntu-20.04
+            gcc-version: 13
+            os: ubuntu-24.04
     runs-on: ${{ matrix.os }}
+    env:
+      CXXFLAGS: -Wno-error=maybe-uninitialized
     steps:
       - name: Install Packages
-        run: sudo apt-get install -y gcc-${{ matrix.gcc-version }} g++-${{ matrix.gcc-version }}
+        run: sudo apt-get update && sudo apt-get install -y gcc-${{ matrix.gcc-version }} g++-${{ matrix.gcc-version }}
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           submodules: true
       - name: Create Build Directory
         run: cmake -E make_directory ${{github.workspace}}.build
       - name: Configure CMake
-        run: cmake ${{github.workspace}} -DCMAKE_BUILD_TYPE=${{matrix.build-type}} -DDEBUG_PARSING=ON
+        run: cmake ${{github.workspace}} -DCMAKE_BUILD_TYPE=${{matrix.build-type}} -DDEBUG_PARSING=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5
         env:
           CC: gcc-${{ matrix.gcc-version }}
           CXX: g++-${{ matrix.gcc-version }}
@@ -69,3 +97,11 @@ jobs:
       - name: Test
         run: ctest --output-on-failure
         working-directory: ${{github.workspace}}.build
+      - name: Upload dectris-neggia.so + sha256
+        uses: actions/upload-artifact@v4
+        with:
+          name: dectris-neggia-${{ matrix.os }}-${{ matrix.build-type }}-gcc${{ matrix.gcc-version }}
+          path: |
+            ${{github.workspace}}.build/src/dectris/neggia/plugin/dectris-neggia.so
+          if-no-files-found: error
+          retention-days: 90
