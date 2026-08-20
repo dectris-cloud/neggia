@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -37,6 +38,23 @@ struct H5DataCache {
 // second plugin_open while the pool is non-empty).
 constexpr int NUM_WORKERS = 16;
 std::vector<std::unique_ptr<H5DataCache>> GLOBAL_POOL;
+
+// Parsed Datasets, indexed by dataset number - 1. Filled lazily on the
+// get_data path. EVERY access to REGISTRY -- read side and both clears
+// included -- is made with REGISTRY_MUTEX held. Entries are immutable once
+// published and are handed out as shared_ptr<const Dataset>, so a caller that
+// took a copy is unaffected by a later replacement, and a superseded entry's
+// mapping is released when the last in-flight reader drops it.
+// MAX_CACHED_DATASETS bounds both the live mapping count and the resize
+// allocation; indices past it are served uncached, exactly as before.
+constexpr size_t MAX_CACHED_DATASETS = 4096;
+std::mutex REGISTRY_MUTEX;
+std::vector<std::shared_ptr<const Dataset>> REGISTRY;
+
+void clearRegistry() {
+    std::lock_guard<std::mutex> lock(REGISTRY_MUTEX);
+    REGISTRY.clear();
+}
 
 void printVersionInfo() {
     std::cout << "This is neggia " << VERSION << " (Copyright Dectris 2020)"
@@ -385,13 +403,39 @@ void applyMaskAndTransformToInt32(const H5DataCache* dataCache,
     }
 }
 
+// Returns the Dataset holding globalFrameNumber, from REGISTRY when a usable
+// entry is cached. An entry is unusable once its file has grown past the extent
+// mapped when the entry was built: addresses parsed out of a grown file may
+// point outside that mapping. Construction runs OUTSIDE the lock, so no caller
+// blocks behind another caller's open(); two threads missing the same index may
+// both build one and the last publisher wins, which is benign because the
+// objects are value-identical.
+std::shared_ptr<const Dataset> acquireDataset(size_t globalFrameNumber,
+                                              const H5DataCache* dataCache) {
+    size_t index = globalFrameNumber / (size_t)dataCache->nframesPerDataset;
+    {
+        std::lock_guard<std::mutex> lock(REGISTRY_MUTEX);
+        if (index < REGISTRY.size() && REGISTRY[index] &&
+            !REGISTRY[index]->fileHasGrown())
+            return REGISTRY[index];
+    }
+    std::shared_ptr<const Dataset> built(new Dataset(
+            dataCache->h5File, getPathToDataset(globalFrameNumber, dataCache)));
+    std::lock_guard<std::mutex> lock(REGISTRY_MUTEX);
+    if (REGISTRY.size() <= index && index < MAX_CACHED_DATASETS)
+        REGISTRY.resize(index + 1);
+    if (index < REGISTRY.size())
+        REGISTRY[index] = built;
+    return built;
+}
+
 void readDataset(int* frame_number,
                  int data_array[],
                  const H5DataCache* dataCache) {
     size_t globalFrameNumber = correctFrameNumberOffset(*frame_number);
-    std::string pathToDataset = getPathToDataset(globalFrameNumber, dataCache);
     try {
-        Dataset dataset(dataCache->h5File, pathToDataset);
+        auto held = acquireDataset(globalFrameNumber, dataCache);
+        const Dataset& dataset = *held;
         size_t totNumberOfDatasets = dataset.dim()[0];
         size_t datasetFrameNumber =
                 getFrameNumberWithinDataset(globalFrameNumber, dataCache);
@@ -458,6 +502,9 @@ void plugin_get_header(int* nx,
     setInfoArray(info);
     try {
         H5DataCache* dataCache = getPreopenedDataCache();
+        // Drop anything a get_data-before-get_header call may have cached under
+        // an indeterminate masterFileOnly / nframesPerDataset.
+        clearRegistry();
         setXPixelSize(dataCache);
         setYPixelSize(dataCache);
         setPixelMask(dataCache);
@@ -520,7 +567,13 @@ void plugin_get_data(int* frame_number,
 }
 
 void plugin_close(int* error_flag) {
+    // Single-threaded by contract (every get_data thread joined first).
+    // Straggler shared_ptr copies keep their Datasets alive, so clearing the
+    // registry cannot dangle; the lock inside clearRegistry() keeps the
+    // container race-free even if the contract is violated.
+    clearRegistry();
     GLOBAL_POOL.clear();
+    *error_flag = 0;
 }
 
 }  // extern "C"

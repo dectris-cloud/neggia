@@ -25,6 +25,12 @@ public:
     bool isChunked() const;
     std::vector<size_t> chunkShape() const;
 
+    // True when the file's own end-of-file address exceeds the extent mapped
+    // when this Dataset was built, i.e. the file has grown since. Addresses
+    // parsed out of it may then lie outside the mapping, so a Dataset that
+    // reports true must be rebuilt before it is read again.
+    bool fileHasGrown() const;
+
     // chunkOffset is ignored for contigous or raw datasets
     void read(void* data,
               const std::vector<size_t>& chunkOffset =
