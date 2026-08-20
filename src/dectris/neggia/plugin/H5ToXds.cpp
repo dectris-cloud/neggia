@@ -25,7 +25,10 @@ struct H5DataCache {
     int dimy;
     int datasize;
     int nframesPerDataset;
-    std::unique_ptr<int32_t[]> mask;
+    // Shared, not per-worker: the mask is read-only once the header phase is
+    // done, and a private copy per worker costs dimx*dimy*4 bytes each (69 MB
+    // per worker on a 16M detector).
+    std::shared_ptr<int32_t> mask;
     float xpixelSize;
     float ypixelSize;
     bool masterFileOnly;
@@ -257,7 +260,7 @@ void setPixelMask(H5DataCache* dataCache) {
         dataCache->dimx = (int)dim[1];
         dataCache->dimy = (int)dim[0];
         size_t s = (size_t)(dataCache->dimx * dataCache->dimy);
-        dataCache->mask.reset(new int32_t[s]);
+        dataCache->mask.reset(new int32_t[s], std::default_delete<int32_t[]>());
         if (pixelMask.isSigned()) {
             switch (pixelMask.dataSize()) {
                 case 1: {
@@ -478,10 +481,14 @@ void plugin_open(const char* filename, int info_array[1024], int* error_flag) {
     }
     try {
         GLOBAL_POOL.reserve(NUM_WORKERS);
+        // Map the master once. H5File holds a shared_ptr to the mapping, so a
+        // copy is a refcount bump: one open() and one mmap for the whole pool
+        // instead of one per worker.
+        H5File master(filename);
         for (int i = 0; i < NUM_WORKERS; ++i) {
             std::unique_ptr<H5DataCache> dataCache(new H5DataCache);
             dataCache->filename = filename;
-            dataCache->h5File = H5File(filename);
+            dataCache->h5File = master;
             GLOBAL_POOL.push_back(std::move(dataCache));
         }
     } catch (const std::out_of_range&) {
@@ -517,7 +524,6 @@ void plugin_get_header(int* nx,
         // concurrent plugin_get_data call. H5DataCache is
         // write-once-then-immutable after this point, so per-worker copies
         // are thread-confined and need no synchronization on the hot path.
-        size_t maskSize = (size_t)dataCache->dimx * dataCache->dimy;
         for (size_t i = 1; i < GLOBAL_POOL.size(); ++i) {
             H5DataCache* w = GLOBAL_POOL[i].get();
             w->dimx = dataCache->dimx;
@@ -527,9 +533,7 @@ void plugin_get_header(int* nx,
             w->xpixelSize = dataCache->xpixelSize;
             w->ypixelSize = dataCache->ypixelSize;
             w->masterFileOnly = dataCache->masterFileOnly;
-            w->mask.reset(new int32_t[maskSize]);
-            std::memcpy(w->mask.get(), dataCache->mask.get(),
-                        maskSize * sizeof(int32_t));
+            w->mask = dataCache->mask;
         }
 
         *nx = dataCache->dimx;

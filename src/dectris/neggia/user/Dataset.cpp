@@ -107,8 +107,14 @@ void Dataset::readBitshuffleData(ConstDataPointer rawData,
 size_t Dataset::chunkDataSize() const {
     size_t s = _dataSize;
     if (isChunked()) {
-        assert(chunkShape() == std::vector<size_t>({1, _dim[1], _dim[2]}));
-        return _dataSize * _dim[1] * _dim[2];
+        // Size one chunk from the chunk shape itself. Deriving it from _dim
+        // instead only works for 3-D frame stacks: for a 2-D chunked dataset
+        // (an Eiger pixel mask, for instance) _dim[2] reads past the end of
+        // the vector, and the resulting garbage is either harmlessly large or
+        // small enough to make the decoder reject a valid chunk.
+        for (auto d : chunkShape())
+            s *= d;
+        return s;
     }
     for (auto d : _dim)
         s *= d;
