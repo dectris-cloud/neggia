@@ -71,13 +71,6 @@ std::vector<size_t> Dataset::chunkShape() const {
     return _dataLayoutMsg.chunkShape();
 }
 
-bool Dataset::fileHasGrown() const {
-    H5Superblock superblock(_h5File.fileAddress());
-    // End-of-file address: byte 40 in superblock v0, byte 28 in v2/v3.
-    size_t eofOffset = superblock.version() == 0 ? 40 : 28;
-    return superblock.read_u64(eofOffset) > _h5File.mapSize();
-}
-
 void Dataset::readRawData(ConstDataPointer rawData,
                           void* outData,
                           size_t outDataSize) const {
@@ -107,8 +100,14 @@ void Dataset::readBitshuffleData(ConstDataPointer rawData,
 size_t Dataset::chunkDataSize() const {
     size_t s = _dataSize;
     if (isChunked()) {
-        assert(chunkShape() == std::vector<size_t>({1, _dim[1], _dim[2]}));
-        return _dataSize * _dim[1] * _dim[2];
+        // Size one chunk from the chunk shape itself. Deriving it from _dim
+        // instead only works for 3-D frame stacks: for a 2-D chunked dataset
+        // (an Eiger pixel mask, for instance) _dim[2] reads past the end of
+        // the vector, and the resulting garbage is either harmlessly large or
+        // small enough to make the decoder reject a valid chunk.
+        for (auto d : chunkShape())
+            s *= d;
+        return s;
     }
     for (auto d : _dim)
         s *= d;
@@ -117,11 +116,6 @@ size_t Dataset::chunkDataSize() const {
 
 void Dataset::read(void* data, const std::vector<size_t>& chunkOffset) const {
     auto rawData = _dataLayoutMsg.getRawData(_dataSize, chunkOffset);
-    // The chunk address comes out of the file itself; refuse it when it points
-    // outside the mapping instead of dereferencing a wild pointer.
-    if (rawData.data < _h5File.fileAddress() ||
-        rawData.data >= _h5File.fileAddress() + _h5File.mapSize())
-        throw std::out_of_range("chunk address outside the mapped file");
     size_t s = chunkDataSize();
     switch (_filterId) {
         case -1:

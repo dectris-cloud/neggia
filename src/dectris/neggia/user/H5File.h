@@ -12,9 +12,6 @@ public:
     ~H5File();
     const char* fileAddress() const;
     std::string fileDir() const;
-    // Bytes mapped when this handle was created, i.e. the file's size at that
-    // moment. Data appended afterwards is NOT reachable through it.
-    size_t mapSize() const;
 
 private:
     std::shared_ptr<char> _fileAddress;
