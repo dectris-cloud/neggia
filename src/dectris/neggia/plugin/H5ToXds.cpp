@@ -8,7 +8,6 @@
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -25,7 +24,10 @@ struct H5DataCache {
     int dimy;
     int datasize;
     int nframesPerDataset;
-    std::unique_ptr<int32_t[]> mask;
+    // Shared, not per-worker: the mask is read-only once the header phase is
+    // done, and a private copy per worker costs dimx*dimy*4 bytes each (69 MB
+    // per worker on a 16M detector).
+    std::shared_ptr<int32_t> mask;
     float xpixelSize;
     float ypixelSize;
     bool masterFileOnly;
@@ -38,23 +40,6 @@ struct H5DataCache {
 // second plugin_open while the pool is non-empty).
 constexpr int NUM_WORKERS = 16;
 std::vector<std::unique_ptr<H5DataCache>> GLOBAL_POOL;
-
-// Parsed Datasets, indexed by dataset number - 1. Filled lazily on the
-// get_data path. EVERY access to REGISTRY -- read side and both clears
-// included -- is made with REGISTRY_MUTEX held. Entries are immutable once
-// published and are handed out as shared_ptr<const Dataset>, so a caller that
-// took a copy is unaffected by a later replacement, and a superseded entry's
-// mapping is released when the last in-flight reader drops it.
-// MAX_CACHED_DATASETS bounds both the live mapping count and the resize
-// allocation; indices past it are served uncached, exactly as before.
-constexpr size_t MAX_CACHED_DATASETS = 4096;
-std::mutex REGISTRY_MUTEX;
-std::vector<std::shared_ptr<const Dataset>> REGISTRY;
-
-void clearRegistry() {
-    std::lock_guard<std::mutex> lock(REGISTRY_MUTEX);
-    REGISTRY.clear();
-}
 
 void printVersionInfo() {
     std::cout << "This is neggia " << VERSION << " (Copyright Dectris 2020)"
@@ -257,7 +242,7 @@ void setPixelMask(H5DataCache* dataCache) {
         dataCache->dimx = (int)dim[1];
         dataCache->dimy = (int)dim[0];
         size_t s = (size_t)(dataCache->dimx * dataCache->dimy);
-        dataCache->mask.reset(new int32_t[s]);
+        dataCache->mask.reset(new int32_t[s], std::default_delete<int32_t[]>());
         if (pixelMask.isSigned()) {
             switch (pixelMask.dataSize()) {
                 case 1: {
@@ -403,39 +388,13 @@ void applyMaskAndTransformToInt32(const H5DataCache* dataCache,
     }
 }
 
-// Returns the Dataset holding globalFrameNumber, from REGISTRY when a usable
-// entry is cached. An entry is unusable once its file has grown past the extent
-// mapped when the entry was built: addresses parsed out of a grown file may
-// point outside that mapping. Construction runs OUTSIDE the lock, so no caller
-// blocks behind another caller's open(); two threads missing the same index may
-// both build one and the last publisher wins, which is benign because the
-// objects are value-identical.
-std::shared_ptr<const Dataset> acquireDataset(size_t globalFrameNumber,
-                                              const H5DataCache* dataCache) {
-    size_t index = globalFrameNumber / (size_t)dataCache->nframesPerDataset;
-    {
-        std::lock_guard<std::mutex> lock(REGISTRY_MUTEX);
-        if (index < REGISTRY.size() && REGISTRY[index] &&
-            !REGISTRY[index]->fileHasGrown())
-            return REGISTRY[index];
-    }
-    std::shared_ptr<const Dataset> built(new Dataset(
-            dataCache->h5File, getPathToDataset(globalFrameNumber, dataCache)));
-    std::lock_guard<std::mutex> lock(REGISTRY_MUTEX);
-    if (REGISTRY.size() <= index && index < MAX_CACHED_DATASETS)
-        REGISTRY.resize(index + 1);
-    if (index < REGISTRY.size())
-        REGISTRY[index] = built;
-    return built;
-}
-
 void readDataset(int* frame_number,
                  int data_array[],
                  const H5DataCache* dataCache) {
     size_t globalFrameNumber = correctFrameNumberOffset(*frame_number);
+    std::string pathToDataset = getPathToDataset(globalFrameNumber, dataCache);
     try {
-        auto held = acquireDataset(globalFrameNumber, dataCache);
-        const Dataset& dataset = *held;
+        Dataset dataset(dataCache->h5File, pathToDataset);
         size_t totNumberOfDatasets = dataset.dim()[0];
         size_t datasetFrameNumber =
                 getFrameNumberWithinDataset(globalFrameNumber, dataCache);
@@ -478,10 +437,14 @@ void plugin_open(const char* filename, int info_array[1024], int* error_flag) {
     }
     try {
         GLOBAL_POOL.reserve(NUM_WORKERS);
+        // Map the master once. H5File holds a shared_ptr to the mapping, so a
+        // copy is a refcount bump: one open() and one mmap for the whole pool
+        // instead of one per worker.
+        H5File master(filename);
         for (int i = 0; i < NUM_WORKERS; ++i) {
             std::unique_ptr<H5DataCache> dataCache(new H5DataCache);
             dataCache->filename = filename;
-            dataCache->h5File = H5File(filename);
+            dataCache->h5File = master;
             GLOBAL_POOL.push_back(std::move(dataCache));
         }
     } catch (const std::out_of_range&) {
@@ -502,9 +465,6 @@ void plugin_get_header(int* nx,
     setInfoArray(info);
     try {
         H5DataCache* dataCache = getPreopenedDataCache();
-        // Drop anything a get_data-before-get_header call may have cached under
-        // an indeterminate masterFileOnly / nframesPerDataset.
-        clearRegistry();
         setXPixelSize(dataCache);
         setYPixelSize(dataCache);
         setPixelMask(dataCache);
@@ -517,7 +477,6 @@ void plugin_get_header(int* nx,
         // concurrent plugin_get_data call. H5DataCache is
         // write-once-then-immutable after this point, so per-worker copies
         // are thread-confined and need no synchronization on the hot path.
-        size_t maskSize = (size_t)dataCache->dimx * dataCache->dimy;
         for (size_t i = 1; i < GLOBAL_POOL.size(); ++i) {
             H5DataCache* w = GLOBAL_POOL[i].get();
             w->dimx = dataCache->dimx;
@@ -527,9 +486,7 @@ void plugin_get_header(int* nx,
             w->xpixelSize = dataCache->xpixelSize;
             w->ypixelSize = dataCache->ypixelSize;
             w->masterFileOnly = dataCache->masterFileOnly;
-            w->mask.reset(new int32_t[maskSize]);
-            std::memcpy(w->mask.get(), dataCache->mask.get(),
-                        maskSize * sizeof(int32_t));
+            w->mask = dataCache->mask;
         }
 
         *nx = dataCache->dimx;
@@ -567,13 +524,7 @@ void plugin_get_data(int* frame_number,
 }
 
 void plugin_close(int* error_flag) {
-    // Single-threaded by contract (every get_data thread joined first).
-    // Straggler shared_ptr copies keep their Datasets alive, so clearing the
-    // registry cannot dangle; the lock inside clearRegistry() keeps the
-    // container race-free even if the contract is violated.
-    clearRegistry();
     GLOBAL_POOL.clear();
-    *error_flag = 0;
 }
 
 }  // extern "C"
