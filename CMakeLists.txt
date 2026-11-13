@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.6)
-project(neggia VERSION 1.2.0)
+project(neggia VERSION 1.3.1)
 
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/googletest/CMakeLists.txt")
   set(BUILD_TESTING OFF CACHE BOOL "")

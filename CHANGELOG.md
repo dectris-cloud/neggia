@@ -10,6 +10,16 @@ commit history.
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-11-13
+
+First stable release since 1.2.0. It contains the fixes and changes of
+1.3.1-beta.1 listed below; apart from the version number, the code is the same.
+
+### Changed
+
+- The plugin now reports its version as 1.3.1 when XDS loads it. Builds of
+  1.3.1-beta.1 still reported 1.2.0.
+
 ## [1.3.1-beta.1] — 2026-09-11
 
 Pre-release for testing. **Not intended for production data.**
